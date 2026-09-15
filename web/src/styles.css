@@ -74,6 +74,7 @@ tbody tr.selected { background: #e4f6fb; box-shadow: inset 3px 0 var(--cyan); }
 .explanation h3, .decision h3 { font-size: 13px; margin-bottom: 6px; }.explanation p { font-size: 12px; line-height: 1.5; color: #3f5b7b; }
 .registry { margin: 0 10px 10px; border: 1px solid #cae8e6; background: #f1fbfa; border-radius: 7px; padding: 11px 12px; display: flex; align-items: center; justify-content: space-between; }
 .registry > div { display: flex; align-items: center; gap: 9px; }.registry strong, .registry span { display: block; }.registry strong { font-size: 12px; }.registry span { color: #5a738d; font-size: 11px; margin-top: 2px; }
+.registry a { display: inline-block; margin-top: 4px; color: #087f86; font-size: 10px; font-weight: 700; }
 .registry button { border: 1px solid #70c8c4; background: white; color: #087f86; border-radius: 6px; padding: 7px 10px; font-weight: 650; font-size: 11px; }
 .decision { border-top: 1px solid var(--line); padding: 13px 14px; }
 .decision-head { display: flex; justify-content: space-between; align-items: start; margin-bottom: 9px; }.decision-head p { color: var(--muted); font-size: 11px; }

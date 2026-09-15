@@ -11,6 +11,8 @@ type CaseItem = {
   left: Record<string, string>; right: Record<string, string>; documents?: string[]; score?: number; flagType?: "semantic" | "numeric" | "both"; review: Review;
 };
 type AnalysisResponse = { cases?: CaseItem[]; error?: string; excludedTechnicalTraps?: number; engine?: string };
+type RegistryResponse = { source?: string; found?: boolean; error?: string; manualUrl?: string; data?: { status?: string; registeredName?: string } };
+const KGD_MANUAL_URL = "https://portal.kgd.gov.kz/ru/pages/info-services/find-taxpayer";
 
 const severityLabel: Record<Severity, string> = { critical: "Критично", high: "Высокий", medium: "Средний", info: "Инфо" };
 const statusLabel: Record<ReviewStatus, string> = { pending: "Ожидает", pending_second: "Нужна 2-я роль", accepted: "Подтверждено", rejected: "Отклонено" };
@@ -35,6 +37,7 @@ function App() {
   const [importReports, setImportReports] = useState<SheetImport[]>([]);
   const [usingUpload, setUsingUpload] = useState(false);
   const [registry, setRegistry] = useState("");
+  const [registryLink, setRegistryLink] = useState(KGD_MANUAL_URL);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const loadDemo = async (nextKind: Kind = kind) => {
@@ -92,11 +95,19 @@ function App() {
   const checkRegistry = async () => {
     const bin = selected?.left["БИН"];
     if (!bin) return;
+    if (!usingUpload) {
+      setRegistry("Демонстрационный БИН не отправлен в государственный реестр");
+      setRegistryLink(KGD_MANUAL_URL);
+      return;
+    }
     setRegistry("Проверяем…");
     try {
-      const response = await fetch(`/api/registry/${bin}`); const data = await response.json() as { source?: string; data?: { status?: string }; error?: string };
-      setRegistry(response.ok ? `${data.source}: ${data.data?.status ?? "ответ получен"}` : data.error ?? "Ошибка реестра");
-    } catch { setRegistry("Реестр недоступен"); }
+      const response = await fetch(`/api/registry/${bin}`); const data = await response.json() as RegistryResponse;
+      setRegistryLink(data.manualUrl ?? KGD_MANUAL_URL);
+      if (!response.ok) setRegistry(data.error ?? "Ошибка реестра");
+      else if (!data.found) setRegistry("КГД: налогоплательщик не найден");
+      else setRegistry(`${data.source}: ${data.data?.status ?? "ответ получен"} · ${data.data?.registeredName ?? "название не указано"}`);
+    } catch { setRegistry("Сервис КГД недоступен"); setRegistryLink(KGD_MANUAL_URL); }
   };
 
   return <div className="app-shell">
@@ -126,12 +137,12 @@ function App() {
         <section className="list-pane"><div className="section-title"><div><h2>{kind === "estimate" ? "Найденные совпадения" : "Конфликты реквизитов"}</h2><p>{filtered.length} результатов для экспертной проверки</p></div><span className="api-live"><i/> API подключён</span></div><div className="table-wrap"><table><thead><tr><th>Сопоставление</th><th>{kind === "estimate" ? "Наименование" : "Контрагент"}</th><th>Расхождение</th><th>Уровень</th><th>Статус</th></tr></thead><tbody>{filtered.map((item) => <tr key={item.id} className={item.id === selected?.id ? "selected" : ""} onClick={() => setSelectedId(item.id)}><td><strong>{item.subtitle.split(" · ")[0]}</strong>{item.score !== undefined && <small>{Math.round(item.score * 100)}%</small>}</td><td>{item.title}</td><td>{item.difference}</td><td><span className={`severity ${item.severity}`}>{severityLabel[item.severity]}</span></td><td><span className={`status status-${item.review?.status ?? "pending"}`}>{statusLabel[item.review?.status ?? "pending"]}</span></td></tr>)}</tbody></table>{!loading && !filtered.length && <div className="empty">Совпадений по текущим данным и фильтрам не найдено</div>}</div></section>
 
         <aside className="detail-pane"><div className="detail-heading"><div><h2>Детали выбранного случая</h2><p>{selected?.subtitle}</p></div><span>{selected ? `${Math.max(1, filtered.findIndex((item) => item.id === selected.id) + 1)} из ${filtered.length}` : "—"}</span></div>{selected ? <><div className="records"><RecordPanel title="Запись A" tone="blue" values={selected.left}/><RecordPanel title="Запись B · требует проверки" tone="red" values={selected.right}/></div><section className="explanation"><h3>Объяснение</h3><p>{selected.explanation}</p></section>
-          {kind === "requisite" && <section className="registry"><div><Database size={19}/><div><strong>Проверка БИН</strong><span>{registry || "Сейчас используется только безопасный синтетический источник"}</span></div></div><button onClick={() => void checkRegistry()}>Проверить</button></section>}
+          {kind === "requisite" && <section className="registry"><div><Database size={19}/><div><strong>Проверка БИН через КГД МФ РК</strong><span>{registry || (usingUpload ? "Официальный запрос выполняется только после нажатия кнопки" : "Демо-БИН не отправляется в государственный реестр")}</span><a href={registryLink} target="_blank" rel="noreferrer">Открыть официальный поиск КГД</a></div></div><button onClick={() => void checkRegistry()}>Проверить БИН</button></section>}
           <section className="decision"><div className="decision-head"><div><h3>Решение эксперта</h3><p>{selected.severity === "critical" ? "Для критичного случая нужны эксперт и контролёр" : "Решение записывается в Cloudflare D1"}</p></div><span className={`status status-${selected.review?.status ?? "pending"}`}>{statusLabel[selected.review?.status ?? "pending"]}</span></div><textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Добавьте комментарий к решению"/><div className="decision-actions"><button className="accept" disabled={loading} onClick={() => void decide("accepted")}><Check size={17}/> Подтвердить</button><button className="reject" disabled={loading} onClick={() => void decide("rejected")}><X size={17}/> Отклонить</button></div>{!!selected.review?.history?.length && <details><summary>История согласования · {selected.review.history.length}</summary><div className="history">{selected.review.history.map((row, index) => <p key={index}><strong>{row.reviewer}</strong> · {row.role === "expert" ? "эксперт" : "контролёр"} · {row.action === "accepted" ? "подтверждено" : "отклонено"}<span>{row.created_at}</span></p>)}</div></details>}</section>
         </> : <div className="empty">Загрузите данные или выберите демо-пример</div>}</aside>
       </div>
     </main>
-    <footer><span>СверкаСмет · MVP</span><span>Файлы анализируются без внешнего AI API · официальные реестры подключаются только после получения доступа</span></footer>
+    <footer><span>СверкаСмет · MVP</span><span>Файлы анализируются без внешнего AI API · проверка БИН подключена к официальному API КГД и требует выданный КГД токен</span></footer>
   </div>;
 }
 export default App;

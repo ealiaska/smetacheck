@@ -15,8 +15,15 @@
     "head_sampling_rate": 1
   },
   "vars": {
-    "REGISTRY_MODE": "mock"
+    "REGISTRY_MODE": "kgd"
   },
+  "ratelimits": [
+    {
+      "name": "KGD_RATE_LIMITER",
+      "namespace_id": "26091501",
+      "simple": { "limit": 20, "period": 60 }
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",

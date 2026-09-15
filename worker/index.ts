@@ -1,7 +1,24 @@
 import { analyzeEstimates, analyzeRequisites, ESTIMATE_FIELDS, REQUISITE_FIELDS, type EstimateRow, type RequisiteRow, type ReviewCase } from "./analysis";
 
 type CaseType = "estimate" | "requisite";
-type AppEnv = Env & { REGISTRY_BASE_URL?: string; REGISTRY_TOKEN?: string };
+type AppEnv = Omit<Env, "REGISTRY_MODE"> & {
+  REGISTRY_MODE: "mock" | "kgd" | "gateway";
+  KGD_PORTAL_TOKEN?: string;
+  REGISTRY_BASE_URL?: string;
+  REGISTRY_TOKEN?: string;
+};
+type KgdRecord = {
+  code?: string;
+  taxpayerType?: string;
+  name?: string;
+  beginDate?: string;
+  endDate?: string | null;
+  messageResult?: string;
+  endReason?: { ru?: string; kk?: string; en?: string } | null;
+};
+
+const KGD_API_URL = "https://portal.kgd.gov.kz/services/isnaportalsync/public/taxpayer-data";
+const KGD_MANUAL_URL = "https://portal.kgd.gov.kz/ru/pages/info-services/find-taxpayer";
 
 const demoEstimateRows: EstimateRow[] = [
   { document_id: "Смета-01", position_id: "1.1.5", page_or_sheet: "Лист 1", work_description: "Устройство бетонного основания", unit: "м3", quantity: 12, unit_price: 18500, norm_ref: "E11-01" },
@@ -19,6 +36,24 @@ const demoRequisiteRows: RequisiteRow[] = [
 
 const json = (data: unknown, init: ResponseInit = {}) => new Response(JSON.stringify(data), { ...init, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...init.headers } });
 const clean = (value: unknown, max = 300) => typeof value === "string" ? value.trim().slice(0, max) : "";
+
+async function boundedJson(response: Response, maxBytes = 256_000): Promise<unknown> {
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) { await reader.cancel(); throw new Error("KGD response too large"); }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
 
 async function getDecisionState(env: AppEnv, caseId: string) {
   const { results } = await env.DB.prepare("SELECT id, action, reviewer, role, comment, severity, created_at FROM decisions WHERE case_id = ? ORDER BY id DESC").bind(caseId).all();
@@ -46,7 +81,7 @@ async function readRows<T extends Record<string, unknown>>(request: Request, fie
 
 async function handleApi(request: Request, env: AppEnv): Promise<Response> {
   const url = new URL(request.url);
-  if (request.method === "GET" && url.pathname === "/api/health") return json({ ok: true, service: "smetacheck", storage: "D1", registryMode: env.REGISTRY_MODE, analysis: "offline-tfidf-word-char-v2" });
+  if (request.method === "GET" && url.pathname === "/api/health") return json({ ok: true, service: "smetacheck", storage: "D1", registryMode: env.REGISTRY_MODE, registryConfigured: env.REGISTRY_MODE === "kgd" && Boolean(env.KGD_PORTAL_TOKEN), analysis: "offline-tfidf-word-char-v2" });
   if (request.method === "GET" && url.pathname === "/api/cases") {
     const type: CaseType = url.searchParams.get("type") === "requisite" ? "requisite" : "estimate";
     const result = type === "requisite" ? analyzeRequisites(demoRequisiteRows) : analyzeEstimates(demoEstimateRows);
@@ -84,6 +119,34 @@ async function handleApi(request: Request, env: AppEnv): Promise<Response> {
   if (request.method === "GET" && registryMatch) {
     const bin = registryMatch[1];
     if (env.REGISTRY_MODE === "mock") return json({ source: "Синтетический mock", found: true, data: { bin, status: "Демонстрационная запись", registeredName: "Демо-контрагент", checkedAt: new Date().toISOString() } });
+    if (env.REGISTRY_MODE === "kgd") {
+      if (!env.KGD_PORTAL_TOKEN) return json({ error: "Для автоматической проверки нужен X-Portal-Token, выданный КГД", code: "KGD_TOKEN_REQUIRED", manualUrl: KGD_MANUAL_URL }, { status: 503 });
+      const origin = request.headers.get("origin");
+      if (origin && origin !== url.origin) return json({ error: "Cross-origin registry request denied" }, { status: 403 });
+      const { success } = await env.KGD_RATE_LIMITER.limit({ key: "kgd-taxpayer-lookup" });
+      if (!success) return json({ error: "Слишком много запросов к КГД. Повторите через минуту", code: "RATE_LIMITED", manualUrl: KGD_MANUAL_URL }, { status: 429 });
+      const kgdUrl = new URL(KGD_API_URL);
+      kgdUrl.searchParams.set("taxpayerCode", bin);
+      kgdUrl.searchParams.set("taxpayerType", "UL");
+      kgdUrl.searchParams.set("print", "false");
+      const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 8_000);
+      try {
+        const response = await fetch(kgdUrl, { headers: { "X-Portal-Token": env.KGD_PORTAL_TOKEN, accept: "application/json" }, signal: controller.signal });
+        if (!response.ok) {
+          console.error(JSON.stringify({ event: "kgd.lookup.failed", status: response.status }));
+          const message = response.status === 403 || response.status === 404 ? "КГД отклонил доступ: проверьте X-Portal-Token" : "Сервис КГД временно недоступен";
+          return json({ error: message, code: "KGD_UPSTREAM_ERROR", manualUrl: KGD_MANUAL_URL }, { status: 502 });
+        }
+        const payload = await boundedJson(response) as { taxpayerPortalSearchResponses?: KgdRecord[] };
+        const record = payload?.taxpayerPortalSearchResponses?.find((item) => item.code === bin) ?? payload?.taxpayerPortalSearchResponses?.[0];
+        if (!record) return json({ source: "КГД МФ РК", found: false, manualUrl: KGD_MANUAL_URL, checkedAt: new Date().toISOString() });
+        const active = !record.endDate;
+        return json({ source: "КГД МФ РК", found: true, manualUrl: KGD_MANUAL_URL, data: { bin: record.code ?? bin, registeredName: record.name ?? "—", taxpayerType: record.taxpayerType ?? "UL", status: active ? "Зарегистрирован" : `Снят с учёта${record.endReason?.ru ? `: ${record.endReason.ru}` : ""}`, beginDate: record.beginDate ?? null, endDate: record.endDate ?? null, checkedAt: new Date().toISOString() } });
+      } catch (error) {
+        console.error(JSON.stringify({ event: "kgd.lookup.unavailable", message: error instanceof Error ? error.message : "unknown" }));
+        return json({ error: "Сервис КГД не ответил вовремя", code: "KGD_UNAVAILABLE", manualUrl: KGD_MANUAL_URL }, { status: 502 });
+      } finally { clearTimeout(timer); }
+    }
     if (!env.REGISTRY_BASE_URL || !env.REGISTRY_TOKEN) return json({ error: "Официальный реестр не настроен" }, { status: 503 });
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 5000);
     try {
