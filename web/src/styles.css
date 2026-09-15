@@ -30,6 +30,7 @@ main { flex: 1; padding: 0 clamp(20px, 4vw, 64px) 36px; }
 .upload-button { border: 0; background: var(--navy); color: white; }.upload-button:hover { background: #1b477f; }.upload-button:disabled { opacity: .55; cursor: wait; }
 .demo-button { border: 1px solid #c8d7e5; background: white; color: #466481; }
 .schema { grid-column: 1 / -1; color: #66809b; font-size: 10px; overflow-wrap: anywhere; }.selected-files { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; color: #087556; font-size: 12px; font-weight: 650; }
+.import-report { grid-column: 1 / -1; margin: 0; padding: 10px 12px; border: 1px solid #cce2e8; border-radius: 7px; background: #fff; }.import-report summary { padding: 0; border: 0; color: #176b78; font-size: 11px; }.import-report div { display: grid; gap: 3px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #e4edf1; font-size: 10px; }.import-report span { color: #526f89; overflow-wrap: anywhere; }.import-report em { color: #8a6613; font-style: normal; }
 .toolbar { display: grid; grid-template-columns: minmax(220px,1.3fr) 145px 160px 155px 130px auto; gap: 12px; align-items: end; margin-bottom: 18px; }
 label > span { display: block; font-size: 12px; font-weight: 650; margin-bottom: 7px; color: #47658a; }
 .search-field > div, .select-wrap, .plain-input { height: 42px; border: 1px solid #cddbe9; border-radius: 7px; background: white; }

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test:web": "vitest run",
     "typecheck": "tsc -b --pretty false",
     "cf-types": "wrangler types worker-configuration.d.ts",
     "deploy": "pnpm build && wrangler deploy",
@@ -25,6 +26,7 @@
     "@types/react-dom": "latest",
     "typescript": "latest",
     "vite": "latest",
+    "vitest": "^5.0.0",
     "wrangler": "latest"
   }
 }

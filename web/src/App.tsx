@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Building2, Check, ChevronDown, Database, FileSearch, FileSpreadsheet, RefreshCw, Search, ShieldCheck, Trash2, Upload, UserRound, X } from "lucide-react";
+import { parseFlexibleFiles, type SheetImport } from "./importer";
 
 type Kind = "estimate" | "requisite";
 type Severity = "critical" | "high" | "medium" | "info";
@@ -11,37 +12,11 @@ type CaseItem = {
 };
 type AnalysisResponse = { cases?: CaseItem[]; error?: string; excludedTechnicalTraps?: number; engine?: string };
 
-const schemas = {
-  estimate: ["document_id", "position_id", "page_or_sheet", "work_description", "unit", "quantity", "unit_price", "norm_ref"],
-  requisite: ["document_id", "page_or_sheet", "entity_name", "bin", "legal_address", "bank_name", "bik", "account_number"],
-} as const;
 const severityLabel: Record<Severity, string> = { critical: "Критично", high: "Высокий", medium: "Средний", info: "Инфо" };
 const statusLabel: Record<ReviewStatus, string> = { pending: "Ожидает", pending_second: "Нужна 2-я роль", accepted: "Подтверждено", rejected: "Отклонено" };
-const emptyReview = (): Review => ({ status: "pending", acceptedRoles: [], history: [] });
 
 function RecordPanel({ title, tone, values }: { title: string; tone: "blue" | "red"; values: Record<string, string> }) {
   return <section className={`record record-${tone}`}><h3>{title}</h3><dl>{Object.entries(values).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value || "—"}</dd></div>)}</dl></section>;
-}
-
-async function parseFiles(files: File[], kind: Kind) {
-  const XLSX = await import("xlsx");
-  const rows: Array<Record<string, string | number>> = [];
-  for (const file of files) {
-    if (file.size > 5_000_000) throw new Error(`${file.name}: файл больше 5 МБ`);
-    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: false });
-    for (const sheetName of workbook.SheetNames) {
-      const parsed = XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets[sheetName], { defval: "", raw: false });
-      for (const source of parsed) {
-        const normalized = Object.fromEntries(Object.entries(source).map(([key, value]) => [key.trim().replace(/^\uFEFF/, "").toLowerCase(), typeof value === "number" ? value : String(value ?? "").trim()]));
-        if (Object.values(normalized).some((value) => String(value).trim())) rows.push(normalized);
-      }
-    }
-  }
-  if (!rows.length) throw new Error("В выбранных файлах нет строк данных");
-  const missing = schemas[kind].filter((field) => !Object.hasOwn(rows[0], field));
-  if (missing.length) throw new Error(`Не хватает колонок: ${missing.join(", ")}`);
-  if (rows.length > 500) throw new Error("Для одного запуска разрешено не более 500 строк");
-  return rows;
 }
 
 function App() {
@@ -57,6 +32,7 @@ function App() {
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const [fileNames, setFileNames] = useState<string[]>([]);
+  const [importReports, setImportReports] = useState<SheetImport[]>([]);
   const [usingUpload, setUsingUpload] = useState(false);
   const [registry, setRegistry] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -67,7 +43,7 @@ function App() {
       const response = await fetch(`/api/cases?type=${nextKind}`);
       const data = await response.json() as AnalysisResponse;
       if (!response.ok) throw new Error(data.error ?? "Не удалось загрузить данные");
-      setCases(data.cases ?? []); setSelectedId(data.cases?.[0]?.id ?? ""); setUsingUpload(false); setFileNames([]);
+      setCases(data.cases ?? []); setSelectedId(data.cases?.[0]?.id ?? ""); setUsingUpload(false); setFileNames([]); setImportReports([]);
       setNotice("Загружены безопасные синтетические демо-данные");
     } catch (error) { setNotice(error instanceof Error ? error.message : "Ошибка API"); }
     finally { setLoading(false); }
@@ -88,11 +64,12 @@ function App() {
     if (kind === "requisite" && files.length > 1) { setNotice("Для реестра реквизитов выберите один файл"); return; }
     setLoading(true); setNotice("Разбираем файл и выполняем проверку…");
     try {
-      const rows = await parseFiles(files, kind);
+      const imported = await parseFlexibleFiles(files, kind);
+      const rows = imported.rows;
       const response = await fetch(`/api/analyze/${kind === "estimate" ? "estimates" : "requisites"}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ rows }) });
       const data = await response.json() as AnalysisResponse;
       if (!response.ok) throw new Error(data.error ?? "Анализ не выполнен");
-      setCases(data.cases ?? []); setSelectedId(data.cases?.[0]?.id ?? ""); setFileNames(files.map((file) => file.name)); setUsingUpload(true); setDocumentFilter("all");
+      setCases(data.cases ?? []); setSelectedId(data.cases?.[0]?.id ?? ""); setFileNames(files.map((file) => file.name)); setImportReports(imported.reports); setUsingUpload(true); setDocumentFilter("all");
       const trapNote = data.excludedTechnicalTraps ? ` Технических ложных совпадений исключено: ${data.excludedTechnicalTraps}.` : "";
       setNotice(`Проверено ${rows.length} строк. Найдено случаев: ${data.cases?.length ?? 0}.${trapNote}`);
     } catch (error) { setNotice(error instanceof Error ? error.message : "Ошибка чтения файла"); }
@@ -128,10 +105,11 @@ function App() {
       <nav className="tabs" aria-label="Разделы"><button className={kind === "estimate" ? "active" : ""} onClick={() => setKind("estimate")}>Позиции работ</button><button className={kind === "requisite" ? "active" : ""} onClick={() => setKind("requisite")}>Реквизиты контрагентов</button></nav>
 
       <section className="upload-card">
-        <div className="upload-copy"><div className="upload-icon">{kind === "estimate" ? <FileSpreadsheet/> : <Building2/>}</div><div><h2>{kind === "estimate" ? "Загрузите сметы или АВР" : "Загрузите реестр реквизитов"}</h2><p>{kind === "estimate" ? "Один или два файла CSV/XLSX · до 500 строк" : "Один файл CSV/XLSX · до 500 строк"}</p></div></div>
+        <div className="upload-copy"><div className="upload-icon">{kind === "estimate" ? <FileSpreadsheet/> : <Building2/>}</div><div><h2>{kind === "estimate" ? "Загрузите сметы или АВР" : "Загрузите реестр реквизитов"}</h2><p>{kind === "estimate" ? "Любая структура CSV/XLSX · один или два файла · до 500 строк" : "Любая структура CSV/XLSX · один файл · до 500 строк"}</p></div></div>
         <div className="upload-actions"><input ref={inputRef} className="file-input" type="file" accept=".csv,.xlsx,.xls" multiple={kind === "estimate"} onChange={(event) => void uploadFiles(event.target.files)}/><button className="upload-button" disabled={loading} onClick={() => inputRef.current?.click()}><Upload size={17}/> Выбрать файл{kind === "estimate" ? "ы" : ""}</button>{usingUpload && <button className="demo-button" onClick={() => void loadDemo()}><Trash2 size={16}/> Вернуть демо</button>}</div>
-        <div className="schema"><strong>Обязательные колонки:</strong> {schemas[kind].join(", ")}</div>
+        <div className="schema"><strong>Шаблон не требуется:</strong> система ищет заголовки, русские/казахские синонимы и таблицу на любом листе. Номера документа, листа и позиции восстанавливаются автоматически.</div>
         {!!fileNames.length && <div className="selected-files"><Check size={15}/> {fileNames.join(" · ")}</div>}
+        {!!importReports.length && <details className="import-report"><summary>Как распознана структура · {importReports.reduce((sum, report) => sum + report.rows, 0)} строк</summary>{importReports.map((report) => <div key={`${report.file}-${report.sheet}`}><strong>{report.file} · {report.sheet}</strong><span>{Object.entries(report.mapping).map(([field, source]) => `${source} → ${field}`).join(" · ")}</span>{!!report.inferred.length && <em>Автоматически определены по содержимому: {report.inferred.join(", ")}</em>}</div>)}</details>}
       </section>
 
       <section className="toolbar">
