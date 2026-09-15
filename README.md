@@ -7,6 +7,29 @@ MVP для экспертной проверки двух независимых
 
 Система ничего не удаляет, не объединяет и не блокирует. Каждый результат — только предложение для человека; эксперт подтверждает или отклоняет его в интерфейсе. Решения и журнал аудита сохраняются в локальной SQLite-базе.
 
+В репозитории также находится web-версия для Cloudflare Workers: React-интерфейс, HTTP API и постоянный журнал решений в Cloudflare D1.
+
+## Web-версия для Cloudflare
+
+Требуется Node.js 20+ и pnpm.
+
+```powershell
+pnpm install
+pnpm build
+pnpm exec wrangler d1 migrations apply smetacheck-db --local
+pnpm exec wrangler dev --local
+```
+
+Основные API-маршруты:
+
+- `GET /api/health` — состояние Worker и bindings;
+- `GET /api/cases?type=estimate|requisite` — контрольные случаи и состояние согласования;
+- `POST /api/decisions` — append-only решение эксперта или контролёра;
+- `GET /api/registry/{bin}` — mock либо согласованный реестровый шлюз;
+- `POST /api/analyze` — ограниченный edge-анализ переданного JSON-набора.
+
+Для production сначала создаётся D1-база `smetacheck-db`, её `database_id` записывается в `wrangler.jsonc`, затем применяются миграции и выполняется `wrangler deploy`. Значения `REGISTRY_TOKEN` и другие ключи добавляются только через Cloudflare Secrets и никогда не коммитятся.
+
 ## Запуск
 
 Требуется Python 3.11+.
