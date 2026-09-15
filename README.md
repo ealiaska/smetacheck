@@ -9,6 +9,8 @@ MVP для экспертной проверки двух независимых
 
 В репозитории также находится web-версия для Cloudflare Workers: React-интерфейс, HTTP API и постоянный журнал решений в Cloudflare D1.
 
+Production: [https://smetacheck.alaid.workers.dev](https://smetacheck.alaid.workers.dev)
+
 ## Web-версия для Cloudflare
 
 Требуется Node.js 20+ и pnpm.
